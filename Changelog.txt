@@ -1,0 +1,12 @@
+EasyTier KoolShare Plugin Changelog
+=====================================
+
+v2.6.0 (2026-04-18)
+- 初始版本：EasyTier 异地组网插件
+- 支持去中心化组网，无需中央服务器
+- 使用 TOML 配置文件方式启动 easytier-core
+- 支持 WireGuard 加密传输和客户端接入
+- 提供 Web 界面管理，支持配置网络名称、密钥、节点地址等
+- 支持手动查询组网的 Peer 信息
+- 自动从 GitHub 拉取最新 release 的 bin 文件并打包
+- 支持 ARM 和 ARM64 架构

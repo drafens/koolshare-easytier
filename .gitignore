@@ -1,0 +1,11 @@
+# 二进制文件目录
+easytier/bin/*
+
+# 构建产物
+build/*
+output/*
+
+# 临时文件
+easytier/version
+version
+config.json.js
