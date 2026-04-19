@@ -17,6 +17,26 @@ submit_log(){
 	[ "${EASYTIER_SUBMIT}" = "1" ] && echo_date "$@"
 }
 
+# 通用轮询等待函数
+# $1: 检查命令，返回0表示成功
+# $2: 最大等待次数（默认50）
+# $3: 每次间隔秒数（默认0.2）
+wait_for_condition() {
+	local check_cmd="$1"
+	local max_wait="${2:-50}"
+	local interval="${3:-0.2}"
+	local count=0
+	
+	while [ ${count} -lt ${max_wait} ]; do
+		if eval "${check_cmd}" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep ${interval}
+		count=$((count + 1))
+	done
+	return 1
+}
+
 fun_ntp_sync(){
 	# 异步执行 NTP 同步，避免阻塞启动流程
 	(
@@ -163,9 +183,9 @@ case $2 in
 		fun_start_stop
 		fun_nat_start
 		if [ "${easytier_enable}" = "1" ]; then
-			sleep 3
-			pid="$(pidof easytier-core 2>/dev/null)"
-			if [ -n "${pid}" ]; then
+			# 轮询检测进程是否启动，最多等待5秒
+			if wait_for_condition "pidof easytier-core" 25 0.2; then
+				pid="$(pidof easytier-core 2>/dev/null)"
 				echo_date "EasyTier 程序启动成功，PID: ${pid}"
 				echo "EASYTIER_RESULT=OK"
 			else
@@ -184,13 +204,13 @@ case $2 in
 				echo "EASYTIER_RESULT=FAIL"
 			fi
 		else
-			sleep 1
-			if pidof easytier-core >/dev/null 2>&1; then
-				echo_date "EasyTier 程序停止失败，请稍后重试！"
-				echo "EASYTIER_RESULT=FAIL"
-			else
+			# 轮询检测进程是否停止，最多等待5秒
+			if wait_for_condition "! pidof easytier-core" 25 0.2; then
 				echo_date "EasyTier 程序已停止"
 				echo "EASYTIER_RESULT=OK"
+			else
+				echo_date "EasyTier 程序停止失败，请稍后重试！"
+				echo "EASYTIER_RESULT=FAIL"
 			fi
 		fi
 		echo "XU6J03M16"
@@ -200,6 +220,9 @@ case $2 in
 2)
 	# 查询 peer 信息
 	(
+		# 先删除旧文件，确保生成的是最新数据
+		rm -f /tmp/upload/easytier_peer_info.txt
+		
 		if pidof easytier-core >/dev/null 2>&1; then
 			peer_info="$(${CLI_BIN} peer 2>/dev/null)"
 			if [ $? -eq 0 ] && [ -n "${peer_info}" ]; then

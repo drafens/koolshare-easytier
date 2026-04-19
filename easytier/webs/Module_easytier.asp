@@ -85,6 +85,41 @@ var easytier_log_poll_tries = 0;
 const LOG_END_MARKER = "XU6J03M16";
 const RESULT_OK = "EASYTIER_RESULT=OK";
 
+// 通用轮询工具函数
+function pollUntilSuccess(url, checkFn, successFn, errorFn, maxRetries, interval) {
+	maxRetries = maxRetries || 10;
+	interval = interval || 100;
+	var retries = 0;
+	
+	function doPoll() {
+		retries++;
+		if (retries > maxRetries) {
+			if (errorFn) errorFn();
+			return;
+		}
+		
+		$.ajax({
+			url: url,
+			type: 'GET',
+			cache: false,
+			dataType: 'text',
+			data: { '_': new Date().getTime() },
+			success: function(response) {
+				if (checkFn(response)) {
+					successFn(response);
+				} else {
+					setTimeout(doPoll, interval);
+				}
+			},
+			error: function() {
+				setTimeout(doPoll, interval);
+			}
+		});
+	}
+	
+	doPoll();
+}
+
 function initial() {
 	show_menu(menu_hook);
 	get_dbus_data();
@@ -420,6 +455,11 @@ function view_easytier_peer_info(){
 		"params": [2],
 		"fields": {}
 	};
+	
+	E("easytier_loading_block_title").innerHTML = "&nbsp;&nbsp;EasyTier Peer 信息";
+	showEasyTierLoadingBar();
+	E("easytier_log_content").value = "正在获取最新 Peer 信息...";
+	
 	$.ajax({
 		type: "POST",
 		cache: false,
@@ -427,36 +467,37 @@ function view_easytier_peer_info(){
 		data: JSON.stringify(postData),
 		dataType: "json",
 		success: function(response) {
-			showPeerInfo();
+			// 使用通用轮询函数
+			pollUntilSuccess(
+				'/_temp/easytier_peer_info.txt',
+				function(response) {
+					return response && response.trim().length > 0 && response.indexOf("暂无") == -1;
+				},
+				function(response) {
+					var retArea = E("easytier_log_content");
+					retArea.value = response;
+					retArea.cols = 100;
+					retArea.scrollTop = 0;
+					retArea.scrollLeft = 0;
+					E("easytier_ok_button").style.visibility = "visible";
+					E("easytier_ok_button1").value = "关闭";
+				},
+				function() {
+					E("easytier_log_content").value = "获取 Peer 信息超时，请稍后重试。";
+					E("easytier_ok_button").style.visibility = "visible";
+					E("easytier_ok_button1").value = "关闭";
+				}
+			);
+		},
+		error: function() {
+			E("easytier_log_content").value = "获取 Peer 信息失败，请确认 EasyTier 正在运行。";
+			E("easytier_ok_button").style.visibility = "visible";
+			E("easytier_ok_button1").value = "关闭";
 		}
 	});
 }
 
-function showPeerInfo(){
-	E("easytier_loading_block_title").innerHTML = "&nbsp;&nbsp;EasyTier Peer 信息";
-	showEasyTierLoadingBar();
-	$.ajax({
-		url: '/_temp/easytier_peer_info.txt',
-		type: 'GET',
-		cache:false,
-		dataType: 'text',
-		success: function(response) {
-			var retArea = E("easytier_log_content");
-			retArea.value = response || "暂无 Peer 信息";
-			retArea.cols = 100;  // 增加列数以适应宽表格
-			retArea.scrollTop = 0;  // 滚动到顶部
-			retArea.scrollLeft = 0;
-			E("easytier_ok_button").style.visibility = "visible";
-			E("easytier_ok_button1").value = "关闭";
-		},
-		error: function() {
-			E("easytier_loading_block_title").innerHTML = "获取失败 ...";
-			E("easytier_log_content").value = "无法获取 Peer 信息，请确认 EasyTier 正在运行。";
-			E("easytier_ok_button").style.visibility = "visible";
-			E("easytier_ok_button1").value = "关闭";
-		}
-	});
-}
+
 
 function menu_hook(title, tab) {
 	tabtitle[tabtitle.length - 1] = new Array("", "EasyTier 异地组网");
