@@ -3,6 +3,7 @@ EasyTier KoolShare Plugin Changelog
 
 v1.0 (2026-04-19)
 - 日志显示改用轮询，优化启动和peer信息查看速度
+- 优化代码逻辑，统一代码风格
 
 v2.6.0 (2026-04-18)
 - 初始版本：EasyTier 异地组网插件

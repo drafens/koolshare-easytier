@@ -1,0 +1,21 @@
+# EasyTier TOML Configuration
+# 保存位置: /koolshare/configs/easytier.toml
+
+instance_name = 'my-network'
+hostname = 'my-router'
+ipv4 = '10.144.144.1'
+dhcp = false
+
+[network_identity]
+network_name = 'my-network'
+network_secret = 'your-secret-password'
+
+[rpc]
+rpc_portal = '127.0.0.1:15888'
+
+[flags]
+no_tun = true
+
+# 添加peer节点
+[[peer]]
+uri = 'tcp://1.2.3.4:11010'

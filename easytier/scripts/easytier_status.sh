@@ -1,4 +1,4 @@
-#! /bin/sh
+#!/bin/sh
 
 export KSROOT=/koolshare
 . $KSROOT/scripts/base.sh

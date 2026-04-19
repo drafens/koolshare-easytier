@@ -56,26 +56,33 @@ sh build.sh qca
 
 配置采用 TOML 格式，保存到 `/koolshare/configs/easytier.toml`。
 
-### 基础配置示例
+### 配置示例（模板）
+
+默认配置模板位于 [easytier/res/template.toml](easytier/res/template.toml)
 
 ```toml
+# 示例如下：
 instance_name = 'my-network'
 hostname = 'my-router'
-dhcp = false
 ipv4 = '10.144.144.1'
-# dhcp = true
+dhcp = false
 
 [network_identity]
 network_name = 'my-network'
 network_secret = 'your-secret-password'
 
+[rpc]
+rpc_portal = '127.0.0.1:15888'
+
 [flags]
 no_tun = true
 
-# 添加对等节点（可选）
-# [[peer]]
-# uri = 'tcp://1.2.3.4:11010'
+# 添加peer节点
+[[peer]]
+uri = 'tcp://1.2.3.4:11010'
 ```
+> **提示**：如需修改默认配置，请编辑 [easytier/res/template.toml](easytier/res/template.toml) 文件
+> **提示**：请根据实际内容修改ipv4，network_name，network_secret，peer等参数
 
 ### 重要说明
 
