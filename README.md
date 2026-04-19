@@ -88,4 +88,6 @@ no_tun = true
 
 ## 许可证
 
-本项目基于 EasyTier 开源项目开发，遵循相关开源协议。
+本项目采用 [LGPL-3.0](LICENSE) 开源许可证。
+
+本项目基于 [EasyTier](https://github.com/EasyTier/EasyTier) 开源项目开发，遵循相关开源协议。
