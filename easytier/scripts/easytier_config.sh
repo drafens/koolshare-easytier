@@ -13,15 +13,15 @@ PID_FILE=/var/run/easytier.pid
 SUBMIT_LOG_FILE=/tmp/upload/easytier_submit_log.txt
 STARTUP_LOG_FILE=/tmp/upload/easytier_startup.log
 
-submit_log(){
+tool_submit_log(){
 	[ "${EASYTIER_SUBMIT}" = "1" ] && echo_date "$@"
 }
 
-# 通用轮询等待函数
+# 轮询等待函数
 # $1: 检查命令，返回0表示成功
 # $2: 最大等待次数（默认50）
 # $3: 每次间隔秒数（默认0.2）
-wait_for_condition() {
+tool_wait_for_condition() {
 	local check_cmd="$1"
 	local max_wait="${2:-50}"
 	local interval="${3:-0.2}"
@@ -37,8 +37,132 @@ wait_for_condition() {
 	return 1
 }
 
-fun_ntp_sync(){
-	# 异步执行 NTP 同步，避免阻塞启动流程
+# 返回结果辅助函数
+tool_print_success_marker() {
+	echo "EASYTIER_RESULT=OK"
+	tool_print_end_marker
+}
+
+tool_print_fail_marker() {
+	echo "EASYTIER_RESULT=FAIL"
+	tool_print_end_marker
+}
+
+tool_print_end_marker() {
+	echo "XU6J03M16"
+}
+
+# Base64 解码函数
+# $1: base64 编码的配置
+# $2: 输出文件路径
+# 返回: 0=成功, 1=失败
+config_decode_toml() {
+	local config_b64="$1"
+	local output_file="$2"
+	
+	if [ -z "${config_b64}" ]; then
+		tool_submit_log "TOML 配置为空"
+		return 1
+	fi
+	
+	if ! echo "${config_b64}" | base64 -d > "${output_file}" 2>/dev/null; then
+		tool_submit_log "Base64 解码失败，配置格式不正确"
+		return 1
+	fi
+	
+	if [ ! -s "${output_file}" ]; then
+		tool_submit_log "配置内容为空"
+		return 1
+	fi
+	
+	return 0
+}
+
+config_save_toml(){
+	# 从 dbus 获取 base64 编码的配置并解码保存
+	local config_b64="${toml_base64}"
+	local temp_file="/tmp/easytier_save_temp.toml"
+	
+	if ! config_decode_toml "${config_b64}" "${temp_file}"; then
+		rm -f "${temp_file}"
+		return 1
+	fi
+	
+	# 移动到最终位置
+	tool_submit_log "保存 TOML 配置到 ${TOML_FILE}"
+	mv "${temp_file}" "${TOML_FILE}"
+	tool_submit_log "配置保存成功"
+	return 0
+}
+
+# 检查配置（仅验证，不保存）
+config_check_toml(){
+	local config_b64="${toml_base64}"
+	local temp_file="/tmp/easytier_check.toml"
+
+	if ! config_decode_toml "${config_b64}" "${temp_file}"; then
+		rm -f "${temp_file}"
+		return 1
+	fi
+	
+	tool_submit_log "配置语法检查通过"
+	rm -f "${temp_file}"
+	return 0
+}
+
+# 启动服务
+# $1: 日志函数名（echo_date 或 tool_submit_log）
+service_start() {
+	local log_func="$1"
+	
+	# 保存配置文件
+	if ! config_save_toml; then
+		$log_func "配置文件保存失败，请检查配置！"
+		return 1
+	fi
+	
+	$log_func "检查配置文件..."
+	if [ ! -s "${TOML_FILE}" ]; then
+		$log_func "配置文件不存在或为空"
+		return 1
+	fi
+	$log_func "配置文件验证通过"
+	
+	# 停止旧进程
+	killall easytier-core >/dev/null 2>&1 || true
+	sleep 1
+	
+	# 清空启动日志
+	> "${STARTUP_LOG_FILE}"
+	
+	# 启动 easytier-core
+	nohup ${CORE_BIN} -c "${TOML_FILE}" >> "${STARTUP_LOG_FILE}" 2>&1 &
+	echo $! > "${PID_FILE}"
+	
+	$log_func "EasyTier 进程已启动"
+	return 0
+}
+
+# 停止服务  
+# $1: 日志函数名（echo_date 或 tool_submit_log）
+service_stop() {
+	local log_func="$1"
+	
+	killall easytier-core >/dev/null 2>&1 || true
+	
+	# 轮询检测进程是否停止，最多等待5秒
+	if tool_wait_for_condition "! pidof easytier-core" 25 0.2; then
+		$log_func "EasyTier 进程已停止"
+		rm -f "${PID_FILE}"
+		return 0
+	else
+		$log_func "EasyTier 进程停止超时"
+		return 1
+	fi
+}
+
+# NTP 同步
+sys_ntp_sync(){
 	(
 		ntp_server="$(nvram get ntp_server0)"
 		start_time="$(date +%Y%m%d)"
@@ -49,59 +173,7 @@ fun_ntp_sync(){
 	) &
 }
 
-save_toml_config(){
-	# 从 dbus 获取 base64 编码的配置并解码保存
-	local config_b64="${easytier_toml_config_b64}"
-	
-	if [ -z "${config_b64}" ]; then
-		submit_log "错误：TOML 配置为空！"
-		return 1
-	fi
-	
-	submit_log "保存 TOML 配置文件到 ${TOML_FILE}"
-	if ! echo "${config_b64}" | base64 -d > "${TOML_FILE}" 2>/dev/null; then
-		submit_log "错误：Base64 解码失败，配置格式不正确！"
-		return 1
-	fi
-	
-	if [ ! -s "${TOML_FILE}" ]; then
-		submit_log "错误：配置文件保存失败！"
-		return 1
-	fi
-	
-	submit_log "TOML 配置文件保存成功！"
-	return 0
-}
-
-# 检查配置（仅验证，不保存）
-check_toml_config(){
-	local config_b64="${easytier_toml_config_b64}"
-	
-	if [ -z "${config_b64}" ]; then
-		submit_log "错误：TOML 配置为空！"
-		return 1
-	fi
-	
-	# 解码并验证语法
-	local temp_file="/tmp/easytier_check.toml"
-	if ! echo "${config_b64}" | base64 -d > "${temp_file}" 2>/dev/null; then
-		submit_log "错误：Base64 解码失败，配置格式不正确！"
-		rm -f "${temp_file}"
-		return 1
-	fi
-	
-	if [ ! -s "${temp_file}" ]; then
-		submit_log "错误：配置内容为空！"
-		rm -f "${temp_file}"
-		return 1
-	fi
-	
-	submit_log "TOML 配置语法检查通过！"
-	rm -f "${temp_file}"
-	return 0
-}
-
-fun_start_stop(){
+sys_start_stop(){
 	# 获取版本信息
 	if [ -x "${CLI_BIN}" ]; then
 		local version="$(${CLI_BIN} --version 2>/dev/null || echo "unknown")"
@@ -109,43 +181,14 @@ fun_start_stop(){
 	fi
 	
 	if [ "${easytier_enable}" = "1" ]; then
-		submit_log "启动 EasyTier 服务..."
-		
-		# 保存配置文件
-		if ! save_toml_config; then
-			submit_log "配置文件保存失败，请检查配置！"
-			return 1
-		fi
-		
-		submit_log "检查配置文件..."
-		if [ ! -s "${TOML_FILE}" ]; then
-			submit_log "配置文件检查失败！"
-			return 1
-		fi
-		submit_log "配置文件检查通过，准备启动..."
-		
-		# 停止旧进程
-		killall easytier-core >/dev/null 2>&1 || true
-		sleep 1
-		
-		# 清空启动日志
-		> "${STARTUP_LOG_FILE}"
-		
-		# 启动 easytier-core
-		nohup ${CORE_BIN} -c "${TOML_FILE}" >> "${STARTUP_LOG_FILE}" 2>&1 &
-		echo $! > "${PID_FILE}"
-		
-		submit_log "EasyTier 服务已启动"
+		service_start tool_submit_log
 	else
-		submit_log "停止 EasyTier 服务..."
-		killall easytier-core >/dev/null 2>&1 || true
-		rm -f "${PID_FILE}"
-		submit_log "EasyTier 服务已停止"
+		service_stop tool_submit_log
 	fi
 }
 
-fun_nat_start(){
-	if [ "${easytier_enable}"x = "1"x ];then
+sys_nat_start(){
+	if [ "${easytier_enable}" = "1" ]; then
 		[ ! -L "/koolshare/init.d/N99easytier.sh" ] && ln -sf /koolshare/scripts/easytier_config.sh /koolshare/init.d/N99easytier.sh
 	else
 		rm -rf /koolshare/init.d/N99easytier.sh >/dev/null 2>&1
@@ -156,68 +199,75 @@ fun_nat_start(){
 # this part for start up by post-mount
 case $ACTION in
 start)
-	fun_ntp_sync
-	fun_start_stop
-	fun_nat_start
+	sys_ntp_sync
+	sys_start_stop
+	sys_nat_start
 	;;
 start_nat)
-	fun_ntp_sync
-	fun_start_stop
+	sys_ntp_sync
+	sys_start_stop
 	;;
 esac
 
 # for web submit
 case $2 in
-1)
-	# 启动/停止服务
+start)
+	# 启动服务
 	(
 		EASYTIER_SUBMIT=1
 		export EASYTIER_SUBMIT
-		echo_date "开始提交配置..."
-		fun_ntp_sync
-		if [ "${easytier_enable}" = "1" ]; then
-			echo_date "启动 EasyTier 服务..."
-		else
-			echo_date "停止 EasyTier 服务..."
-		fi
-		fun_start_stop
-		fun_nat_start
-		if [ "${easytier_enable}" = "1" ]; then
+		echo_date "========== 启动 EasyTier =========="
+		sys_ntp_sync
+		
+		# 启动服务
+		if service_start echo_date; then
+			sys_nat_start
+			
 			# 轮询检测进程是否启动，最多等待5秒
-			if wait_for_condition "pidof easytier-core" 25 0.2; then
+			if tool_wait_for_condition "pidof easytier-core" 25 0.2; then
 				pid="$(pidof easytier-core 2>/dev/null)"
-				echo_date "EasyTier 程序启动成功，PID: ${pid}"
-				echo "EASYTIER_RESULT=OK"
+				echo_date "EasyTier 启动成功，PID: ${pid}"
+				echo_date "======================================"
+				tool_print_success_marker
 			else
-				echo_date "=========================================="
-				echo_date "EasyTier 程序启动失败！"
-				echo_date "=========================================="
+				echo_date "--------------------------------------"
+				echo_date "EasyTier 启动失败"
+				echo_date "--------------------------------------"
 				if [ -s "${STARTUP_LOG_FILE}" ]; then
-					echo_date "=== 启动错误日志 ==="
+					echo_date "[错误日志]"
 					cat "${STARTUP_LOG_FILE}"
-					echo_date "===================="
+					echo_date "[/错误日志]"
 				else
-					echo_date "未捕获到错误日志，请检查配置文件"
+					echo_date "未捕获到错误日志，请检查配置"
 				fi
-				# 启动失败时将开关关闭，使页面刷新后按钮状态同步
-				dbus set easytier_enable="0"
-				echo "EASYTIER_RESULT=FAIL"
+				echo_date "======================================"
+				tool_print_fail_marker
 			fi
 		else
-			# 轮询检测进程是否停止，最多等待5秒
-			if wait_for_condition "! pidof easytier-core" 25 0.2; then
-				echo_date "EasyTier 程序已停止"
-				echo "EASYTIER_RESULT=OK"
-			else
-				echo_date "EasyTier 程序停止失败，请稍后重试！"
-				echo "EASYTIER_RESULT=FAIL"
-			fi
+			tool_print_fail_marker
 		fi
-		echo "XU6J03M16"
 	) >"${SUBMIT_LOG_FILE}" 2>&1 &
 	http_response "$1"
 	;;
-2)
+stop)
+	# 停止服务
+	(
+		EASYTIER_SUBMIT=1
+		export EASYTIER_SUBMIT
+		echo_date "========== 停止 EasyTier =========="
+		
+		# 使用核心停止函数
+		if service_stop echo_date; then
+			echo_date "======================================"
+			tool_print_success_marker
+		else
+			echo_date "======================================"
+			tool_print_fail_marker
+		fi
+	) >"${SUBMIT_LOG_FILE}" 2>&1 &
+	http_response "$1"
+	;;
+peer)
 	# 查询 peer 信息
 	(
 		# 先删除旧文件，确保生成的是最新数据
@@ -233,47 +283,48 @@ case $2 in
 		else
 			echo "EasyTier 未运行" > /tmp/upload/easytier_peer_info.txt
 		fi
-		echo "XU6J03M16"
+		tool_print_end_marker
 	) &
 	http_response "$1"
 	;;
-3)
+check)
 	# 检查配置（仅验证，不保存）
 	(
 		EASYTIER_SUBMIT=1
 		export EASYTIER_SUBMIT
-		echo_date "开始检查配置..."
-		if ! check_toml_config; then
-			echo_date "配置检查失败！"
-			echo "EASYTIER_RESULT=FAIL"
-			echo "XU6J03M16"
+		echo_date "========== 检查配置 =========="
+		if ! config_check_toml; then
+			echo_date "配置检查失败"
+			echo_date "======================================"
+			tool_print_fail_marker
 			http_response "$1"
 			exit 0
 		fi
 		
-		echo_date "配置语法正确，请点击「保存」保存配置"
-		echo "EASYTIER_RESULT=OK"
-		echo "XU6J03M16"
+		echo_date "配置语法正确"
+		echo_date "请点击「保存」按钮保存配置"
+		echo_date "======================================"
+		tool_print_success_marker
 	) >"${SUBMIT_LOG_FILE}" 2>&1 &
 	http_response "$1"
 	;;
-4)
+save)
 	# 保存配置（不启动）
 	(
 		EASYTIER_SUBMIT=1
 		export EASYTIER_SUBMIT
-		echo_date "开始保存配置..."
-		if ! save_toml_config; then
-			echo_date "配置保存失败！"
-			echo "EASYTIER_RESULT=FAIL"
-			echo "XU6J03M16"
+		echo_date "========== 保存配置 =========="
+		if ! config_save_toml; then
+			echo_date "配置保存失败"
+			echo_date "======================================"
+			tool_print_fail_marker
 			http_response "$1"
 			exit 0
 		fi
 		echo_date "配置已保存到 ${TOML_FILE}"
-		echo_date "请点击「启动」按钮开始运行"
-		echo "EASYTIER_RESULT=OK"
-		echo "XU6J03M16"
+		echo_date "请点击「启动」按钮运行服务"
+		echo_date "======================================"
+		tool_print_success_marker
 	) >"${SUBMIT_LOG_FILE}" 2>&1 &
 	http_response "$1"
 	;;
