@@ -5,7 +5,9 @@ easytier/bin/*
 build/*
 output/*
 
-# 临时文件
-easytier/version
-version
-config.json.js
+# 商店生成的元数据
+/version
+/config.json.js
+
+# 开发工具缓存
+__pycache__/

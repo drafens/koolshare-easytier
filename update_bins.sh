@@ -1,73 +1,57 @@
 #!/bin/sh
-set -e
+set -eu
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN_DIR="${DIR}/easytier/bin"
+DIR="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+ARCH="${1:-}"
+VERSION="${2:-}"
 
-# 参数: ./update_bins.sh <架构> [版本]
-# 架构: arm, aarch64, x86_64 等
-# 版本: 可选，不填则自动获取最新
-ARCH="$1"
-VERSION="$2"
+[ -n "${ARCH}" ] || { echo "Usage: $0 <arm|aarch64|x86_64|mips> <version>" >&2; exit 2; }
+[ -n "${VERSION}" ] || { echo "A pinned EasyTier version is required" >&2; exit 2; }
+case "${VERSION}" in v*) TAG="${VERSION}" ;; *) TAG="v${VERSION}" ;; esac
 
-if [ -z "${ARCH}" ]; then
-	echo "用法: $0 <架构> [版本]"
-	echo "示例: $0 arm v2.6.0"
-	echo "      $0 aarch64"
-	exit 1
-fi
-
-# 确定版本号
-if [ -n "${VERSION}" ]; then
-	case "${VERSION}" in
-		v*) TAG="${VERSION}" ;;
-		*) TAG="v${VERSION}" ;;
-	esac
-	echo "使用指定版本: ${TAG}"
-else
-	TAG="$(curl -fsSL https://api.github.com/repos/EasyTier/EasyTier/releases/latest | sed -n 's/.*\"tag_name\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p' | head -n 1)"
-	if [ -z "${TAG}" ]; then
-		echo "无法获取最新版本" >&2
-		exit 1
-	fi
-	echo "最新版本: ${TAG}"
-fi
-
-# 下载并解压
-PKG="easytier-linux-${ARCH}-${TAG}.zip"
-URL="https://github.com/EasyTier/EasyTier/releases/download/${TAG}/${PKG}"
+ASSET="easytier-linux-${ARCH}-${TAG}.zip"
+RELEASE_API="https://api.github.com/repos/EasyTier/EasyTier/releases/tags/${TAG}"
 TMPDIR="$(mktemp -d)"
-trap 'rm -rf "${TMPDIR}"' EXIT
+trap 'rm -rf "${TMPDIR}"' EXIT INT TERM
 
-echo "下载: ${URL}"
-curl -fsSL -o "${TMPDIR}/${PKG}" "${URL}"
-unzip -q "${TMPDIR}/${PKG}" -d "${TMPDIR}"
+echo "Fetching EasyTier ${TAG} release metadata..."
+curl -fsSL "${RELEASE_API}" -o "${TMPDIR}/release.json"
+python3 "${DIR}/tools/release_asset.py" "${TMPDIR}/release.json" "${ASSET}" >"${TMPDIR}/asset"
+URL="$(sed -n '1p' "${TMPDIR}/asset")"
+DIGEST="$(sed -n '2p' "${TMPDIR}/asset")"
+[ -n "${URL}" ] && [ -n "${DIGEST}" ] || { echo "Release asset metadata is incomplete" >&2; exit 1; }
 
-# 复制文件（统一命名，不保留架构后缀）
-mkdir -p "${BIN_DIR}"
+echo "Downloading ${ASSET}..."
+curl -fsSL "${URL}" -o "${TMPDIR}/${ASSET}"
+printf '%s  %s\n' "${DIGEST#sha256:}" "${TMPDIR}/${ASSET}" | sha256sum -c -
+unzip -q "${TMPDIR}/${ASSET}" -d "${TMPDIR}/unpack"
+SOURCE_DIR="${TMPDIR}/unpack/easytier-linux-${ARCH}"
+[ -x "${SOURCE_DIR}/easytier-core" ] && [ -x "${SOURCE_DIR}/easytier-cli" ] || { echo "Release archive is missing required binaries" >&2; exit 1; }
 
-if [ ! -d "${TMPDIR}/easytier-linux-${ARCH}" ]; then
-	echo "错误: 解压后的目录不存在: ${TMPDIR}/easytier-linux-${ARCH}" >&2
-	exit 1
-fi
+check_elf_arch() {
+	binary_info="$(file "$1")"
+	case "${ARCH}:${binary_info}" in
+		aarch64:*ARM\ aarch64*|arm:*ARM*|x86_64:*x86-64*|mips:*MIPS*) return 0 ;;
+	esac
+	echo "Unexpected ELF architecture: ${binary_info}" >&2
+	return 1
+}
 
-if [ ! -f "${TMPDIR}/easytier-linux-${ARCH}/easytier-core" ]; then
-	echo "错误: 找不到 easytier-core" >&2
-	exit 1
-fi
+check_elf_arch "${SOURCE_DIR}/easytier-core"
+check_elf_arch "${SOURCE_DIR}/easytier-cli"
 
-cp -f "${TMPDIR}/easytier-linux-${ARCH}/easytier-core" "${BIN_DIR}/easytier-core"
-cp -f "${TMPDIR}/easytier-linux-${ARCH}/easytier-cli" "${BIN_DIR}/easytier-cli"
-chmod 755 "${BIN_DIR}/easytier-core" "${BIN_DIR}/easytier-cli"
+mkdir -p "${DIR}/easytier/bin"
+cp -f "${SOURCE_DIR}/easytier-core" "${DIR}/easytier/bin/easytier-core"
+cp -f "${SOURCE_DIR}/easytier-cli" "${DIR}/easytier/bin/easytier-cli"
+chmod 755 "${DIR}/easytier/bin/easytier-core" "${DIR}/easytier/bin/easytier-cli"
 
-# 更新插件版本号（与 EasyTier 核心版本保持一致）
-# version 文件包含：架构名 + 版本号
-cat > "${DIR}/easytier/version" <<EOF
-${ARCH}
-${TAG#v}
+PLUGIN_VERSION="$(sed -n 's/^PLUGIN_VERSION=//p' "${DIR}/easytier/version" | head -n 1)"
+cat >"${DIR}/easytier/version" <<EOF
+PLUGIN_VERSION=${PLUGIN_VERSION:-2.0.0}
+CORE_VERSION=${TAG#v}
+ARCH=${ARCH}
+UPSTREAM_SHA256=${DIGEST#sha256:}
+CORE_RELEASE_URL=https://github.com/EasyTier/EasyTier/releases/tag/${TAG}
 EOF
 
-echo "完成!"
-echo "已生成:"
-ls -lh "${BIN_DIR}/easytier-core" "${BIN_DIR}/easytier-cli"
-echo "插件版本: $(cat "${DIR}/easytier/version")"
+echo "Updated EasyTier core to ${TAG} (${ARCH})"

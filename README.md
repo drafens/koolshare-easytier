@@ -1,93 +1,116 @@
 # koolshare-easytier
 
-KoolShare EasyTier 异地组网插件
-适用梅林(merlin)固件/官改(asuswrt)固件
+适用于 ASUSWRT KoolShare/Softcenter 的 EasyTier 异地组网插件。
 
-## 简介
+插件遵循“薄适配”原则：EasyTier 负责配置解析和组网能力，插件只负责 Softcenter 集成、配置事务、服务生命周期和状态展示。
 
-EasyTier 是一个简单、安全、去中心化的异地组网方案，支持 WireGuard 加密传输。
-本插件为 KoolShare 商店定制，适合梅林(merlin)固件/官改(asuswrt)固件，支持 HND/MTK/QCA/IPQ 等多种路由器架构。
+> **NOTE:** 2.0 版本相比旧版本的配置存储、后端接口和管理页面均有较大调整。建议先备份 `/koolshare/configs/easytier.toml`，在软件中心卸载旧版本后再安装 2.0 版本。2.0 版本的普通卸载会保留该配置文件。
 
-## 功能特性
+> **NOTE:** 当前版本仅在 HND 平台的 ASUS RT-BE88U 上做过充分验证。其他平台和机型虽然提供了构建映射，但安装前请自行确认 CPU 架构并做好配置备份。
 
-- 去中心化 P2P 组网，无需中心服务器
-- WireGuard 加密传输，安全可靠
-- 支持多架构路由器（HND/MTK/QCA/IPQ）
-- Web 界面配置，操作简单
-- 支持配置检查、保存、一键启动
+## 功能
 
-## 快速开始
+- 使用 EasyTier 原生 TOML 配置
+- 保存前由 `easytier-core --check-config` 校验 TOML
+- 保存不影响当前实例，重启服务后应用新配置
+- PID 校验、RPC 启动确认、超时停止和并发操作锁
+- 查看本机、Peer、路由和核心日志
+- 响应式 ASUS/Softcenter 原生管理页面
+- 固定版本下载并校验 GitHub Release SHA-256 digest
 
-### 1. 更新二进制文件
+## 界面预览
 
-示例（aarch64 架构 v2.6.1）：
-```bash
-./update_bins.sh <架构> <版本>
-# 示例:
-./update_bins.sh aarch64 v2.6.1
-```
+### 配置管理
 
-支持的架构：`aarch64`, `arm`, `x86_64`, `mips` 等（根据 EasyTier 官方发布）
-使用toml配置启动，理论兼容所有版本
+![EasyTier 配置管理](docs/images/config.png)
 
-该脚本会自动：
-- 从 GitHub 下载指定版本的压缩包, 具体路径为https://github.com/EasyTier/EasyTier/releases/download/<版本>/easytier-linux-<架构>-<版本>.zip
-- 解压并提取 `easytier-core` 和 `easytier-cli` 到 `easytier/bin/` 目录
-- 更新插件版本号
+### 网络状态
 
-### 2. 构建插件
+![EasyTier Peer 状态](docs/images/network.png)
 
-```bash
-# HND 架构（RT-BE88U, RT-AX86U 等）
-sh build.sh hnd
+### 运行日志
 
-# MTK 架构
-sh build.sh mtk
+![EasyTier 运行日志](docs/images/logs.png)
 
-# QCA 架构
-sh build.sh qca
-```
+## TOML 配置示例
 
-### 3. 安装插件
-
-将生成的 `output/easytier_xx_xx.tar.gz` 上传到路由器软件中心安装。
-
-## 配置说明
-
-配置采用 TOML 格式，保存到 `/koolshare/configs/easytier.toml`。
-
-### 基础配置示例
+以下配置用于展示常见的路由器组网方式。请按实际网络修改网络名称、密钥、Peer 地址和代理网段：
 
 ```toml
-instance_name = 'my-network'
-hostname = 'my-router'
-dhcp = false
-ipv4 = '10.144.144.1'
-# dhcp = true
+instance_name = "drafens"
+hostname = "merlin"
+dhcp = true
+listeners = [
+    "tcp://0.0.0.0:11010",
+    "udp://0.0.0.0:11010",
+    "wg://0.0.0.0:11011",
+]
 
 [network_identity]
-network_name = 'my-network'
-network_secret = 'your-secret-password'
+network_name = "xxx"
+network_secret = "xxx"
+
+[[peer]]
+uri = "tcp://et.x.cn:1101xx0"
+
+[[peer]]
+uri = "udp://et.xxx.cn:11010"
+
+[[proxy_network]]
+cidr = "192.168.50.0/24"
 
 [flags]
-no_tun = true
-
-# 添加对等节点（可选）
-# [[peer]]
-# uri = 'tcp://1.2.3.4:11010'
+no_tun = true # Router environments commonly run without a TUN device.
 ```
 
-### 重要说明
+完整字段说明请参考 [EasyTier 配置文档](https://easytier.cn/guide/network/configurations.html)。
 
-1. **无 TUN 模式**：路由器可能不支持 TUN 设备，启动失败请在 flags 中添加 `no_tun = true`
+## 更新核心
 
-## 相关链接
+必须显式指定架构和版本：
 
-- [EasyTier 官方文档](https://github.com/EasyTier/EasyTier)
-- [KoolShare 论坛](https://www.koolshare.cn)
+```sh
+./update_bins.sh aarch64 2.6.4
+```
+
+支持的架构取决于 EasyTier 官方 Release，例如 `aarch64`、`arm`、`x86_64` 和 `mips`。脚本不会静默使用 latest。
+
+## 构建
+
+平台和 EasyTier 架构映射维护在 `manifest/platforms.conf`：
+
+```sh
+./build.sh hnd
+```
+
+构建会检查版本元数据、二进制 ELF 架构，并生成商店所需 MD5 和额外的 SHA-256。
+
+发布版本由插件版本和 EasyTier 核心版本组成。例如插件 `2.0` 搭配核心 `2.6.4` 时，软件中心和安装包统一使用 `2.0.264`：
+
+```text
+easytier_hnd_aarch64_v2.0.264.tar.gz
+```
+
+## 测试
+
+```sh
+./tests/run.sh
+```
+
+测试覆盖 Shell 语法、服务锁、PID 生命周期、幂等启动、无效配置拒绝和配置事务。
+
+## 路由器路径
+
+- 配置：`/koolshare/configs/easytier.toml`
+- PID：`/var/run/easytier.pid`
+- EasyTier核心日志，写入 `/tmp/easytier/easytier.log`；
+- 插件Shell日志，写入 `/tmp/easytier/easytier-service.log`；
+- 单文件约 1 MiB，并保留一个`.1` 的归档； 可在日志页面手动清理；
+
+普通卸载保留用户配置。仅显式执行卸载脚本的 `purge` 模式时删除配置。
+
+完整架构和验收标准见 [docs/architecture.md](docs/architecture.md)。
 
 ## 许可证
 
-本项目采用 [LGPL-3.0](LICENSE) 开源许可证。
-
-本项目基于 [EasyTier](https://github.com/EasyTier/EasyTier) 开源项目开发，遵循相关开源协议。
+插件采用 [LGPL-3.0](LICENSE)。EasyTier 核心由 [EasyTier](https://github.com/EasyTier/EasyTier) 项目提供并遵循其许可证。

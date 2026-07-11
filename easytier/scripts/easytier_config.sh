@@ -1,280 +1,185 @@
 #!/bin/sh
 
-eval `dbus export easytier_`
-. /koolshare/scripts/base.sh
-mkdir -p /tmp/upload
-mkdir -p /koolshare/configs
+export KSROOT="${KSROOT:-/koolshare}"
+. "${KSROOT}/scripts/base.sh"
+. "${KSROOT}/scripts/easytier_common.sh"
 
-NAME=easytier
-CORE_BIN=/koolshare/bin/easytier-core
-CLI_BIN=/koolshare/bin/easytier-cli
-TOML_FILE=/koolshare/configs/easytier.toml
-PID_FILE=/var/run/easytier.pid
-SUBMIT_LOG_FILE=/tmp/upload/easytier_submit_log.txt
-STARTUP_LOG_FILE=/tmp/upload/easytier_startup.log
+SERVICE_SCRIPT="${KSROOT}/scripts/easytier_service.sh"
+REQUEST_ID="$1"
+ACTION="$2"
 
-submit_log(){
-	[ "${EASYTIER_SUBMIT}" = "1" ] && echo_date "$@"
+respond() {
+	http_response "$(http_safe_payload "$1")"
 }
 
-# 通用轮询等待函数
-# $1: 检查命令，返回0表示成功
-# $2: 最大等待次数（默认50）
-# $3: 每次间隔秒数（默认0.2）
-wait_for_condition() {
-	local check_cmd="$1"
-	local max_wait="${2:-50}"
-	local interval="${3:-0.2}"
-	local count=0
-	
-	while [ ${count} -lt ${max_wait} ]; do
-		if eval "${check_cmd}" >/dev/null 2>&1; then
-			return 0
-		fi
-		sleep ${interval}
-		count=$((count + 1))
-	done
-	return 1
-}
+get_config() {
+	if [ -f "${CONFIG_FILE}" ]; then
+		respond "$(write_result success CONFIG_LOADED 'Configuration loaded')
 
-fun_ntp_sync(){
-	# 异步执行 NTP 同步，避免阻塞启动流程
-	(
-		ntp_server="$(nvram get ntp_server0)"
-		start_time="$(date +%Y%m%d)"
-		ntpclient -h "${ntp_server}" -i3 -l -s >/dev/null 2>&1
-		if [ "${start_time}" = "$(date +%Y%m%d)" ]; then
-			ntpclient -h ntp1.aliyun.com -i3 -l -s >/dev/null 2>&1
-		fi
-	) &
-}
-
-save_toml_config(){
-	# 从 dbus 获取 base64 编码的配置并解码保存
-	local config_b64="${easytier_toml_config_b64}"
-	
-	if [ -z "${config_b64}" ]; then
-		submit_log "错误：TOML 配置为空！"
-		return 1
-	fi
-	
-	submit_log "保存 TOML 配置文件到 ${TOML_FILE}"
-	if ! echo "${config_b64}" | base64 -d > "${TOML_FILE}" 2>/dev/null; then
-		submit_log "错误：Base64 解码失败，配置格式不正确！"
-		return 1
-	fi
-	
-	if [ ! -s "${TOML_FILE}" ]; then
-		submit_log "错误：配置文件保存失败！"
-		return 1
-	fi
-	
-	submit_log "TOML 配置文件保存成功！"
-	return 0
-}
-
-# 检查配置（仅验证，不保存）
-check_toml_config(){
-	local config_b64="${easytier_toml_config_b64}"
-	
-	if [ -z "${config_b64}" ]; then
-		submit_log "错误：TOML 配置为空！"
-		return 1
-	fi
-	
-	# 解码并验证语法
-	local temp_file="/tmp/easytier_check.toml"
-	if ! echo "${config_b64}" | base64 -d > "${temp_file}" 2>/dev/null; then
-		submit_log "错误：Base64 解码失败，配置格式不正确！"
-		rm -f "${temp_file}"
-		return 1
-	fi
-	
-	if [ ! -s "${temp_file}" ]; then
-		submit_log "错误：配置内容为空！"
-		rm -f "${temp_file}"
-		return 1
-	fi
-	
-	submit_log "TOML 配置语法检查通过！"
-	rm -f "${temp_file}"
-	return 0
-}
-
-fun_start_stop(){
-	# 获取版本信息
-	if [ -x "${CLI_BIN}" ]; then
-		local version="$(${CLI_BIN} --version 2>/dev/null || echo "unknown")"
-		dbus set easytier_core_version="${version}"
-	fi
-	
-	if [ "${easytier_enable}" = "1" ]; then
-		submit_log "启动 EasyTier 服务..."
-		
-		# 保存配置文件
-		if ! save_toml_config; then
-			submit_log "配置文件保存失败，请检查配置！"
-			return 1
-		fi
-		
-		submit_log "检查配置文件..."
-		if [ ! -s "${TOML_FILE}" ]; then
-			submit_log "配置文件检查失败！"
-			return 1
-		fi
-		submit_log "配置文件检查通过，准备启动..."
-		
-		# 停止旧进程
-		killall easytier-core >/dev/null 2>&1 || true
-		sleep 1
-		
-		# 清空启动日志
-		> "${STARTUP_LOG_FILE}"
-		
-		# 启动 easytier-core
-		nohup ${CORE_BIN} -c "${TOML_FILE}" >> "${STARTUP_LOG_FILE}" 2>&1 &
-		echo $! > "${PID_FILE}"
-		
-		submit_log "EasyTier 服务已启动"
+$(cat "${CONFIG_FILE}")"
 	else
-		submit_log "停止 EasyTier 服务..."
-		killall easytier-core >/dev/null 2>&1 || true
-		rm -f "${PID_FILE}"
-		submit_log "EasyTier 服务已停止"
+		respond "$(write_result success CONFIG_EMPTY 'No configuration has been saved')"
 	fi
 }
 
-fun_nat_start(){
-	if [ "${easytier_enable}"x = "1"x ];then
-		[ ! -L "/koolshare/init.d/N99easytier.sh" ] && ln -sf /koolshare/scripts/easytier_config.sh /koolshare/init.d/N99easytier.sh
+save_config() {
+	payload_key="easytier_payload_${REQUEST_ID}"
+	if ! ensure_runtime_dirs; then
+		respond "$(write_result failed RUNTIME_UNAVAILABLE 'Runtime directory is unavailable')"
+		return
+	fi
+	payload_b64="$(dbus get "${payload_key}" 2>/dev/null)"
+	dbus remove "${payload_key}" >/dev/null 2>&1 || true
+
+	[ -n "${payload_b64}" ] || { respond "$(write_result failed CONFIG_EMPTY 'Configuration is empty')"; return; }
+	if ! acquire_lock; then
+		respond "$(write_result failed BUSY 'Another operation is in progress')"
+		return
+	fi
+	trap 'release_lock' EXIT
+	trap 'exit 1' HUP INT TERM
+	candidate="${CONFIG_FILE}.new"
+	rm -f "${candidate}"
+	if ! printf '%s' "${payload_b64}" | base64 -d >"${candidate}" 2>/dev/null; then
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_DECODE_FAILED 'Configuration encoding is invalid')"
+		return
+	fi
+	config_size="$(wc -c <"${candidate}" | tr -d ' ')"
+	if [ ! -s "${candidate}" ] || [ "${config_size:-0}" -gt "${MAX_CONFIG_BYTES}" ]; then
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_SIZE_INVALID 'Configuration is empty or too large')"
+		return
+	fi
+	if ! chmod 600 "${candidate}"; then
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_PERMISSION_FAILED 'Configuration permissions could not be set')"
+		return
+	fi
+	check_deadline=$(( $(date +%s) + COMMAND_TIMEOUT_SECONDS ))
+	check_output_file="${RUNTIME_DIR}/config-check.$$"
+	run_with_timeout "${COMMAND_TIMEOUT_SECONDS}" "${check_output_file}" \
+		"${CORE_BIN}" -c "${candidate}" --check-config
+	check_status=$?
+	check_output="$(cat "${check_output_file}" 2>/dev/null)"
+	rm -f "${check_output_file}"
+	if [ "${check_status}" -eq 124 ]; then
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_CHECK_TIMEOUT 'Configuration validation timed out')"
+		return
+	fi
+	if [ "${check_status}" -ne 0 ]; then
+		# EasyTier validates before its logger is initialized, so this
+		# command can fail without writing the parser error to stderr. The normal
+		# path initializes an error-only logger and uses an ephemeral local RPC port.
+		if [ -z "${check_output}" ]; then
+			remaining_seconds=$(( check_deadline - $(date +%s) ))
+			if [ "${remaining_seconds}" -gt 0 ]; then
+				diagnostic_output_file="${RUNTIME_DIR}/config-diagnostic.$$"
+				run_with_timeout "${remaining_seconds}" "${diagnostic_output_file}" \
+					"${CORE_BIN}" -c "${candidate}" --rpc-portal "127.0.0.1:0" \
+					--console-log-level error
+				diagnostic_status=$?
+				check_output="$(cat "${diagnostic_output_file}" 2>/dev/null)"
+				rm -f "${diagnostic_output_file}"
+				[ "${diagnostic_status}" -ne 124 ] || check_output="Configuration diagnostics timed out."
+			fi
+		fi
+		[ -n "${check_output}" ] || check_output="EasyTier did not provide a configuration error."
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_REJECTED 'EasyTier rejected the configuration')
+
+${check_output}"
+		return
+	fi
+	if ! mv -f "${candidate}" "${CONFIG_FILE}"; then
+		rm -f "${candidate}"
+		respond "$(write_result failed CONFIG_COMMIT_FAILED 'Configuration could not be committed; the previous configuration was preserved')"
+		return
+	fi
+	respond "$(write_result success CONFIG_SAVED 'Configuration saved; restart EasyTier to apply it')"
+}
+
+start_action() {
+	if "${SERVICE_SCRIPT}" start; then
+		if dbus set easytier_autostart="1"; then
+			respond "$(write_result success SERVICE_RUNNING 'EasyTier started')"
+		else
+			respond "$(write_result failed AUTOSTART_SAVE_FAILED 'EasyTier started, but its auto-start state could not be saved')"
+		fi
 	else
-		rm -rf /koolshare/init.d/N99easytier.sh >/dev/null 2>&1
+		message="$(tail_core_log 20 2>/dev/null)"
+		respond "$(write_result failed START_FAILED 'EasyTier failed to start')
+
+${message}"
 	fi
 }
 
-# =============================================
-# this part for start up by post-mount
-case $ACTION in
-start)
-	fun_ntp_sync
-	fun_start_stop
-	fun_nat_start
-	;;
-start_nat)
-	fun_ntp_sync
-	fun_start_stop
-	;;
-esac
+stop_action() {
+	autostart_saved=1
+	dbus set easytier_autostart="0" || autostart_saved=0
+	if "${SERVICE_SCRIPT}" stop; then
+		if [ "${autostart_saved}" -eq 1 ]; then
+			respond "$(write_result success SERVICE_STOPPED 'EasyTier stopped')"
+		else
+			respond "$(write_result failed AUTOSTART_SAVE_FAILED 'EasyTier stopped, but its auto-start state could not be saved')"
+		fi
+	else
+		respond "$(write_result failed STOP_FAILED 'EasyTier failed to stop')"
+	fi
+}
 
-# for web submit
-case $2 in
-1)
-	# 启动/停止服务
-	(
-		EASYTIER_SUBMIT=1
-		export EASYTIER_SUBMIT
-		echo_date "开始提交配置..."
-		fun_ntp_sync
-		if [ "${easytier_enable}" = "1" ]; then
-			echo_date "启动 EasyTier 服务..."
-		else
-			echo_date "停止 EasyTier 服务..."
-		fi
-		fun_start_stop
-		fun_nat_start
-		if [ "${easytier_enable}" = "1" ]; then
-			# 轮询检测进程是否启动，最多等待5秒
-			if wait_for_condition "pidof easytier-core" 25 0.2; then
-				pid="$(pidof easytier-core 2>/dev/null)"
-				echo_date "EasyTier 程序启动成功，PID: ${pid}"
-				echo "EASYTIER_RESULT=OK"
-			else
-				echo_date "=========================================="
-				echo_date "EasyTier 程序启动失败！"
-				echo_date "=========================================="
-				if [ -s "${STARTUP_LOG_FILE}" ]; then
-					echo_date "=== 启动错误日志 ==="
-					cat "${STARTUP_LOG_FILE}"
-					echo_date "===================="
-				else
-					echo_date "未捕获到错误日志，请检查配置文件"
-				fi
-				# 启动失败时将开关关闭，使页面刷新后按钮状态同步
-				dbus set easytier_enable="0"
-				echo "EASYTIER_RESULT=FAIL"
-			fi
-		else
-			# 轮询检测进程是否停止，最多等待5秒
-			if wait_for_condition "! pidof easytier-core" 25 0.2; then
-				echo_date "EasyTier 程序已停止"
-				echo "EASYTIER_RESULT=OK"
-			else
-				echo_date "EasyTier 程序停止失败，请稍后重试！"
-				echo "EASYTIER_RESULT=FAIL"
-			fi
-		fi
-		echo "XU6J03M16"
-	) >"${SUBMIT_LOG_FILE}" 2>&1 &
-	http_response "$1"
-	;;
-2)
-	# 查询 peer 信息
-	(
-		# 先删除旧文件，确保生成的是最新数据
-		rm -f /tmp/upload/easytier_peer_info.txt
-		
-		if pidof easytier-core >/dev/null 2>&1; then
-			peer_info="$(${CLI_BIN} peer 2>/dev/null)"
-			if [ $? -eq 0 ] && [ -n "${peer_info}" ]; then
-				echo "${peer_info}" > /tmp/upload/easytier_peer_info.txt
-			else
-				echo "无法获取 Peer 信息" > /tmp/upload/easytier_peer_info.txt
-			fi
-		else
-			echo "EasyTier 未运行" > /tmp/upload/easytier_peer_info.txt
-		fi
-		echo "XU6J03M16"
-	) &
-	http_response "$1"
-	;;
-3)
-	# 检查配置（仅验证，不保存）
-	(
-		EASYTIER_SUBMIT=1
-		export EASYTIER_SUBMIT
-		echo_date "开始检查配置..."
-		if ! check_toml_config; then
-			echo_date "配置检查失败！"
-			echo "EASYTIER_RESULT=FAIL"
-			echo "XU6J03M16"
-			http_response "$1"
-			exit 0
-		fi
-		
-		echo_date "配置语法正确，请点击「保存」保存配置"
-		echo "EASYTIER_RESULT=OK"
-		echo "XU6J03M16"
-	) >"${SUBMIT_LOG_FILE}" 2>&1 &
-	http_response "$1"
-	;;
-4)
-	# 保存配置（不启动）
-	(
-		EASYTIER_SUBMIT=1
-		export EASYTIER_SUBMIT
-		echo_date "开始保存配置..."
-		if ! save_toml_config; then
-			echo_date "配置保存失败！"
-			echo "EASYTIER_RESULT=FAIL"
-			echo "XU6J03M16"
-			http_response "$1"
-			exit 0
-		fi
-		echo_date "配置已保存到 ${TOML_FILE}"
-		echo_date "请点击「启动」按钮开始运行"
-		echo "EASYTIER_RESULT=OK"
-		echo "XU6J03M16"
-	) >"${SUBMIT_LOG_FILE}" 2>&1 &
-	http_response "$1"
-	;;
+cli_action() {
+	cli_command="$1"
+	if ! get_easytier_pid >/dev/null 2>&1; then
+		respond "$(write_result failed SERVICE_STOPPED 'EasyTier is not running')"
+		return
+	fi
+	ensure_runtime_dirs || { respond "$(write_result failed RUNTIME_UNAVAILABLE 'Runtime directory is unavailable')"; return; }
+	cli_output_file="${RUNTIME_DIR}/cli-${cli_command}.$$"
+	run_with_timeout "${COMMAND_TIMEOUT_SECONDS}" "${cli_output_file}" "${CLI_BIN}" "${cli_command}"
+	ret=$?
+	output="$(cat "${cli_output_file}" 2>/dev/null)"
+	rm -f "${cli_output_file}"
+	if [ "${ret}" -eq 124 ]; then
+		respond "$(write_result failed CLI_TIMEOUT 'EasyTier CLI command timed out')"
+		return
+	fi
+	if [ "${ret}" -eq 0 ]; then
+		respond "$(write_result success CLI_OK 'Command completed')
+
+${output}"
+	else
+		respond "$(write_result failed CLI_FAILED 'EasyTier CLI command failed')
+
+${output}"
+	fi
+}
+
+clear_log() {
+	if ! acquire_lock; then
+		respond "$(write_result failed BUSY 'Another operation is in progress')"
+		return
+	fi
+	trap 'release_lock' EXIT
+	trap 'exit 1' HUP INT TERM
+	clear_core_log || { respond "$(write_result failed LOG_CLEAR_FAILED 'Log could not be cleared')"; return; }
+	respond "$(write_result success LOG_CLEARED 'Log cleared')"
+}
+
+case "${ACTION}" in
+	get_config) get_config ;;
+	save_config) save_config ;;
+	start) start_action ;;
+	stop) stop_action ;;
+	get_node) cli_action node ;;
+	get_peers) cli_action peer ;;
+	get_routes) cli_action route ;;
+	clear_log) clear_log ;;
+	get_log)
+		respond "$(write_result success LOG_LOADED 'Log loaded')
+
+$(tail_core_log 200 2>/dev/null)"
+		;;
+	*) respond "$(write_result failed UNKNOWN_ACTION 'Unknown action')" ;;
 esac

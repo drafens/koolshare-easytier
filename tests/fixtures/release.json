@@ -1,0 +1,9 @@
+{
+  "assets": [
+    {
+      "name": "easytier-linux-aarch64-v2.6.4.zip",
+      "browser_download_url": "https://example.invalid/easytier.zip",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}

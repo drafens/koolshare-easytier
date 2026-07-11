@@ -1,13 +1,31 @@
-#! /bin/sh
+#!/bin/sh
 
-export KSROOT=/koolshare
-. $KSROOT/scripts/base.sh
+export KSROOT="${KSROOT:-/koolshare}"
+. "${KSROOT}/scripts/base.sh"
+. "${KSROOT}/scripts/easytier_common.sh"
 
-easytier_version=`/koolshare/bin/easytier-cli --version 2>/dev/null || echo "unknown"`
-easytier_pid=`pidof easytier-core`
-
-if [ -n "$easytier_pid" ];then
-	http_response "EasyTier ${easytier_version} 进程运行正常！PID：$easytier_pid"
+pid="$(get_easytier_pid 2>/dev/null || true)"
+if [ -n "${pid}" ]; then
+	state="running"
 else
-	http_response "EasyTier ${easytier_version} 进程未运行！"
+	last_state="$(sed -n '1p' "${STATE_FILE}" 2>/dev/null)"
+	case "${last_state}" in
+		failed|running) state="failed" ;;
+		*) state="stopped" ;;
+	esac
 fi
+core_version="$(dbus get easytier_core_version 2>/dev/null)"
+plugin_version="$(dbus get softcenter_module_easytier_version 2>/dev/null)"
+if [ -n "${core_version}" ]; then
+	core_release_url="https://github.com/EasyTier/EasyTier/releases/tag/v${core_version}"
+else
+	core_release_url="https://github.com/EasyTier/EasyTier/releases"
+fi
+
+response_payload="STATE=${state}
+PID=${pid}
+CORE_VERSION=${core_version:-unknown}
+CORE_RELEASE_URL=${core_release_url}
+PLUGIN_VERSION=${plugin_version:-unknown}"
+
+http_response "$(http_safe_payload "${response_payload}")"
